@@ -212,4 +212,4 @@ pub fn init_system_time(tc: &mut TC0) {
 }
 
 embassy_time::time_driver_impl!(static DRIVER: AvrTc0EmbassyTimeDriver = AvrTc0EmbassyTimeDriver{});
-embassy_time::timer_queue_impl!(static TIMER_QUEUE: AvrTc0EmbassyTimeDriver = AvrTc0EmbassyTimeDriver{});
+embassy_time::timer_queue_impl!(static QUEUE: AvrTc0EmbassyTimeDriver = AvrTc0EmbassyTimeDriver{});
