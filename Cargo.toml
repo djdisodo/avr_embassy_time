@@ -1,0 +1,49 @@
+[package]
+name = "avr_tc0_embassy_time"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+static_assertions = "1.1.0"
+embassy-time = "0.1.5"
+arraydeque = { version = "0.5.1", default-features = false }
+avr-device = { version = "0.5.3", features = ["rt"] }
+futures-util = { version = "0.3.28", default-features = false, features = ["portable-atomic"] }
+
+[dependencies.avr-hal-generic]
+git = "https://github.com/rahix/avr-hal"
+rev = "190f2c3cb8d29e10f71119352b912369dc5a1fb7"
+
+[dependencies.atmega-hal]
+git = "https://github.com/rahix/avr-hal"
+rev = "190f2c3cb8d29e10f71119352b912369dc5a1fb7"
+features = ["atmega328p"]
+
+[features]
+default = ["default16MHz"]
+default16MHz = ["freq16MHz", "queue8", "prescalar8", "divider2", "embassy-time/tick-hz-1_000_000"]
+queue8 = []
+
+# frequency
+freq16MHz = []
+
+# prescalar
+prescalar8 = []
+
+# divider
+divider2 = []
+
+# Configure the build for minimal size - AVRs have very little program memory
+[profile.dev]
+panic = "abort"
+lto = true
+opt-level = "s"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "s"
