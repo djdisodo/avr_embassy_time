@@ -1,6 +1,25 @@
 #![no_std]
-#![feature(abi_avr_interrupt, const_trait_impl, const_maybe_uninit_zeroed)]
+#![feature(const_trait_impl, const_maybe_uninit_zeroed)]
 extern crate static_assertions as sa;
+
+/// embassy_time implementation for avr
+///
+/// configure using feature flags
+///
+/// adjust QUEUE_SIZE so you don't run out of stack
+///
+/// TODO: allow configuration from env
+///
+/// use macro to define interrupt
+/// ```rust
+/// define_interrupt!(atmega328p)
+/// ```
+///
+/// you need to initialize timer as well
+/// ```rust
+/// init_system_time(&mut dp.TC0);
+/// ```
+/// note you **must** initialize timer before using embassy_time
 
 use core::mem::{MaybeUninit, size_of, transmute};
 use core::task::Waker;
@@ -41,8 +60,16 @@ const CLOCKS_PER_TICK: u64 = prescalar::PRE * DIVIDER;
 #[allow(dead_code)]
 const TICKS_PER_COUNT: u64 = 256 / DIVIDER;
 
+#[cfg(feature = "queue4")]
+const QUEUE_SIZE: usize = 4;
 #[cfg(feature = "queue8")]
-const QUEUE_SIZE: usize = 26;
+const QUEUE_SIZE: usize = 8;
+
+#[cfg(feature = "queue16")]
+const QUEUE_SIZE: usize = 8;
+
+#[cfg(feature = "queue32")]
+const QUEUE_SIZE: usize = 8;
 
 sa::const_assert_eq!(FREQ % CLOCKS_PER_TICK, 0);
 sa::const_assert_eq!(FREQ / CLOCKS_PER_TICK, embassy_time::TICK_HZ);
@@ -115,9 +142,6 @@ impl Driver for AvrTc0EmbassyTimeDriver {
     fn set_alarm(&self, alarm: AlarmHandle, timestamp: u64) -> bool {
         unsafe {
             avr_device::interrupt::free(|_| {
-                if QUEUE[alarm.id() as usize].is_none() {
-                    panic!("call on alarm already fired");
-                }
                 let mut next = &mut QUEUE_NEXT;
                 while let &mut Some(i) = next{
                     let next_i = QUEUE[i as usize].as_mut().unwrap();
@@ -137,10 +161,12 @@ impl Driver for AvrTc0EmbassyTimeDriver {
     }
 }
 
+
 impl TimerQueue for AvrTc0EmbassyTimeDriver {
+    #[inline(never)]
     fn schedule_wake(&'static self, at: Instant, waker: &Waker) {
         unsafe {
-            avr_device::interrupt::free(|_| QUEUE_ID.pop_front()).map(|id| {
+            avr_device::interrupt::free(|_| QUEUE_ID.pop_front().map(|id| {
                 QUEUE[id as usize] = Some(LinkedList {
                     next: None,
                     at: Some(at.as_ticks()),
@@ -150,9 +176,6 @@ impl TimerQueue for AvrTc0EmbassyTimeDriver {
                 let mut next = &mut QUEUE_NEXT;
                 while let &mut Some(i) = next {
                     let next_i = QUEUE[i as usize].as_mut();
-                    if next_i.is_none() {
-                        panic!("aaaa{i}");
-                    }
                     let next_i = next_i.unwrap();
                     let next_at = next_i.at.unwrap();
 
@@ -161,32 +184,32 @@ impl TimerQueue for AvrTc0EmbassyTimeDriver {
                         break;
                     } else {
                         next = &mut next_i.next;
-                        if let &mut Some(v) = next {
-                            if QUEUE[v as usize].is_none() {
-                                panic!("will never panic here!!{i}");
-                            }
-                        }
                     }
                 }
                 next.replace(id);
-            }).expect("queue full, increase queue size");
+            })).expect("queue full, increase queue size");
         }
     }
 }
 
-#[avr_device::interrupt(atmega2560)]
-unsafe fn TIMER0_OVF() {
+#[macro_export]
+macro_rules! define_interrupt {
+    ($mcu:ident) => {
+        #[avr_device::interrupt($mcu)]
+        unsafe fn TIMER0_OVF() {
+            $crate::__tc0_ovf()
+        }
+    };
+}
+
+#[inline(always)]
+pub unsafe fn __tc0_ovf() {
     let (mut next_option, ticks_elapsed) = avr_device::interrupt::free(|_| {
         TICKS_ELAPSED += TICKS_PER_COUNT;
         if let Some(n) = QUEUE_NEXT {
             return if QUEUE[n as usize].as_ref().unwrap().at.unwrap() <= TICKS_ELAPSED {
                 let next = QUEUE[n as usize].take().unwrap();
                 QUEUE_NEXT = next.next;
-                if let Some(v) = next.next {
-                    if QUEUE[v as usize].is_none() {
-                        panic!("1!!{v}");
-                    }
-                }
                 QUEUE_ID.push_back(n).unwrap();
                 (Some(next.v), TICKS_ELAPSED)
             } else {
@@ -206,11 +229,6 @@ unsafe fn TIMER0_OVF() {
                 return if QUEUE[n as usize].as_ref().unwrap().at.unwrap() <= ticks_elapsed {
                     let next = QUEUE[n as usize].take().unwrap();
                     QUEUE_NEXT = next.next;
-                    if let Some(v) = next.next {
-                        if QUEUE[v as usize].is_none() {
-                            panic!("2!!{v}");
-                        }
-                    }
                     QUEUE_ID.push_back(n).unwrap();
                     Some(next.v)
                 } else {

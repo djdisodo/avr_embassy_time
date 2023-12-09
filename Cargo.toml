@@ -19,11 +19,10 @@ rev = "190f2c3cb8d29e10f71119352b912369dc5a1fb7"
 [dependencies.atmega-hal]
 git = "https://github.com/rahix/avr-hal"
 rev = "190f2c3cb8d29e10f71119352b912369dc5a1fb7"
-features = ["atmega2560"]
 
 [features]
 default = ["default16MHz"]
-default16MHz = ["freq16MHz", "queue8", "prescalar8", "divider2", "embassy-time/tick-hz-1_000_000"]
+default16MHz = ["freq16MHz", "prescalar8", "divider2", "embassy-time/tick-hz-1_000_000"]
 queue8 = []
 
 # frequency
@@ -44,6 +43,5 @@ opt-level = "s"
 [profile.release]
 panic = "abort"
 codegen-units = 1
-debug = true
 lto = true
 opt-level = "s"
