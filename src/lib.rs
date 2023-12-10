@@ -25,6 +25,7 @@ use core::mem::{MaybeUninit, size_of, transmute};
 use core::task::Waker;
 use arraydeque::ArrayDeque;
 use atmega_hal::pac::TC0;
+use env_int::env_int;
 use embassy_time::driver::{AlarmHandle, Driver};
 use embassy_time::Instant;
 use embassy_time::queue::TimerQueue;
@@ -60,16 +61,7 @@ const CLOCKS_PER_TICK: u64 = prescalar::PRE * DIVIDER;
 #[allow(dead_code)]
 const TICKS_PER_COUNT: u64 = 256 / DIVIDER;
 
-#[cfg(feature = "queue4")]
-const QUEUE_SIZE: usize = 4;
-#[cfg(feature = "queue8")]
-const QUEUE_SIZE: usize = 8;
-
-#[cfg(feature = "queue16")]
-const QUEUE_SIZE: usize = 8;
-
-#[cfg(feature = "queue32")]
-const QUEUE_SIZE: usize = 8;
+const QUEUE_SIZE: usize = env_int!("AVR_EMBASSY_TIME_QUEUE_SIZE", 4);
 
 sa::const_assert_eq!(FREQ % CLOCKS_PER_TICK, 0);
 sa::const_assert_eq!(FREQ / CLOCKS_PER_TICK, embassy_time::TICK_HZ);
