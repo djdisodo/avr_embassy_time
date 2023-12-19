@@ -1,6 +1,6 @@
 [package]
 name = "avr_tc0_embassy_time"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 author = "djdisodo@gmail.com"
 license = "MIT"

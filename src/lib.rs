@@ -8,6 +8,12 @@ extern crate static_assertions as sa;
 ///
 /// adjust QUEUE_SIZE so you don't run out of stack
 ///
+/// adjust resolution if timer can't keep up,
+/// this is because timer interrupt doesn't finish fast enough
+///
+/// note: these functions shouldn't be called from interrupt context
+/// this is because this library doesn't disable interrupt most of the time during write
+///
 /// TODO: allow configuration from env
 ///
 /// use macro to define interrupt
@@ -21,10 +27,11 @@ extern crate static_assertions as sa;
 /// ```
 /// note you **must** initialize timer before using embassy_time
 
-use core::mem::{MaybeUninit, size_of, transmute};
+use core::mem::MaybeUninit;
 use core::task::Waker;
 use arraydeque::ArrayDeque;
 use atmega_hal::pac::TC0;
+use avr_device::atmega328p::Peripherals;
 use env_int::env_int;
 use embassy_time::driver::{AlarmHandle, Driver};
 use embassy_time::Instant;
@@ -67,14 +74,14 @@ sa::const_assert_eq!(FREQ % CLOCKS_PER_TICK, 0);
 sa::const_assert_eq!(FREQ / CLOCKS_PER_TICK, embassy_time::TICK_HZ);
 sa::const_assert_eq!(256 % DIVIDER, 0);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LinkedList {
-    next: Option<u8>,
-    at: Option<u64>,
+    next: Option<u8>, // there's way to store none value without using option but implementation will became too complex
+    at: u64,
     v: AlarmOrWaker
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AlarmOrWaker {
     Alarm {
         callback: fn(*mut ()),
@@ -84,15 +91,11 @@ pub enum AlarmOrWaker {
     Empty
 }
 
-//insane or something ?
-pub static mut QUEUE: [Option<LinkedList>; QUEUE_SIZE] = unsafe {
-    transmute(
-        [
-            transmute::<_, [u8; size_of::<Option<LinkedList>>()]>(Option::<LinkedList>::None);
-            QUEUE_SIZE
-        ]
-    )
-};
+pub static mut QUEUE: [LinkedList; QUEUE_SIZE] = [LinkedList {
+    next: None,
+    at: 0,
+    v: AlarmOrWaker::Empty,
+}];
 
 pub static mut QUEUE_ID: ArrayDeque<u8, QUEUE_SIZE> = unsafe { MaybeUninit::zeroed().assume_init() };
 
@@ -111,34 +114,33 @@ impl Driver for AvrTc0EmbassyTimeDriver {
 
     unsafe fn allocate_alarm(&self) -> Option<AlarmHandle> {
         avr_hal_generic::avr_device::interrupt::free(|_| QUEUE_ID.pop_front()).map(|n| {
-            QUEUE[n as usize] = Some(LinkedList {
-                next: None,
-                at: None,
-                v: AlarmOrWaker::Empty
-            });
+            // QUEUE[n as usize] = LinkedList {
+            //     next: None,
+            //     at: 0, //uninitialized values doesn't matter since it's not linked anywhere
+            //     v: AlarmOrWaker::Empty
+            // };
             AlarmHandle::new(n)
         })
     }
 
     fn set_alarm_callback(&self, alarm: AlarmHandle, callback: fn(*mut ()), ctx: *mut ()) {
         unsafe {
-            if let Some(li) = &mut QUEUE[alarm.id() as usize] {
-                li.v = AlarmOrWaker::Alarm {
-                    callback,
-                    ctx,
-                }
+            QUEUE[alarm.id() as usize].v = AlarmOrWaker::Alarm {
+                callback,
+                ctx,
             }
         }
     }
 
     fn set_alarm(&self, alarm: AlarmHandle, timestamp: u64) -> bool {
         unsafe {
+            let this_alarm = &mut QUEUE[alarm.id() as usize];
+            this_alarm.at = timestamp;
             avr_device::interrupt::free(|_| {
                 let mut next = &mut QUEUE_NEXT;
-                while let &mut Some(i) = next{
-                    let next_i = QUEUE[i as usize].as_mut().unwrap();
-                    let next_at = next_i.at.unwrap();
-                    let this_alarm = QUEUE[alarm.id() as usize].as_mut().unwrap();
+                while let &mut Some(i) = next {
+                    let next_i = &mut QUEUE[i as usize];
+                    let next_at = next_i.at;
                     if next_at > timestamp {
                         this_alarm.next = Some(i);
                         break;
@@ -159,17 +161,16 @@ impl TimerQueue for AvrTc0EmbassyTimeDriver {
     fn schedule_wake(&'static self, at: Instant, waker: &Waker) {
         unsafe {
             avr_device::interrupt::free(|_| QUEUE_ID.pop_front().map(|id| {
-                QUEUE[id as usize] = Some(LinkedList {
+                let this_alarm = &mut QUEUE[id as usize];
+                *this_alarm = LinkedList {
                     next: None,
-                    at: Some(at.as_ticks()),
+                    at: at.as_ticks(),
                     v: AlarmOrWaker::Waker(waker.clone()),
-                });
-                let this_alarm = QUEUE[id as usize].as_mut().unwrap();
+                };
                 let mut next = &mut QUEUE_NEXT;
                 while let &mut Some(i) = next {
-                    let next_i = QUEUE[i as usize].as_mut();
-                    let next_i = next_i.unwrap();
-                    let next_at = next_i.at.unwrap();
+                    let next_i = &mut QUEUE[i as usize];
+                    let next_at = next_i.at;
 
                     if next_at > at.as_ticks() {
                         this_alarm.next = Some(i);
@@ -196,12 +197,19 @@ macro_rules! define_interrupt {
 
 #[inline(always)]
 pub unsafe fn __tc0_ovf() {
-    let (mut next_option, ticks_elapsed) = avr_device::interrupt::free(|_| {
+    let Peripherals {
+        TC0: tc0, ..
+    } = Peripherals::steal();
+    let mut queue_next = avr_device::interrupt::free(|_| {
         TICKS_ELAPSED += TICKS_PER_COUNT;
-        if let Some(n) = QUEUE_NEXT {
-            return if QUEUE[n as usize].as_ref().unwrap().at.unwrap() <= TICKS_ELAPSED {
-                let next = QUEUE[n as usize].take().unwrap();
-                QUEUE_NEXT = next.next;
+        QUEUE_NEXT.take()
+    }); //minimize critical section
+    let (mut next_option, ticks_elapsed) = (|| {
+        TICKS_ELAPSED += TICKS_PER_COUNT;
+        if let Some(n) = queue_next {
+            return if QUEUE[n as usize].at <= TICKS_ELAPSED {
+                let next = QUEUE[n as usize].clone();
+                queue_next = next.next;
                 QUEUE_ID.push_back(n).unwrap();
                 (Some(next.v), TICKS_ELAPSED)
             } else {
@@ -209,27 +217,28 @@ pub unsafe fn __tc0_ovf() {
             }
         }
         (None, TICKS_ELAPSED)
-    });
+    })();
     while let Some(next) = next_option {
         match next {
             AlarmOrWaker::Alarm { callback, ctx } => callback(ctx),
             AlarmOrWaker::Waker(waker) => waker.wake(),
             AlarmOrWaker::Empty => panic!("alarm fired before setting callback")
         }
-        next_option = avr_device::interrupt::free(|_| {
-            if let Some(n) = QUEUE_NEXT {
-                return if QUEUE[n as usize].as_ref().unwrap().at.unwrap() <= ticks_elapsed {
-                    let next = QUEUE[n as usize].take().unwrap();
-                    QUEUE_NEXT = next.next;
-                    QUEUE_ID.push_back(n).unwrap();
+        next_option = (|| {
+            if let Some(n) = queue_next {
+                return if QUEUE[n as usize].at <= ticks_elapsed {
+                    let next = QUEUE[n as usize].clone();
+                    queue_next = next.next;
+                    QUEUE_ID.push_back(n).unwrap_unchecked();
                     Some(next.v)
                 } else {
                     None
                 }
             }
             None
-        })
+        })()
     }
+    avr_device::interrupt::free(|_| QUEUE_NEXT = queue_next)
 }
 
 pub fn init_system_time(tc: &mut TC0) {
