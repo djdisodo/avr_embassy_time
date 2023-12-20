@@ -3,12 +3,6 @@
 version = 3
 
 [[package]]
-name = "arraydeque"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
-
-[[package]]
 name = "atmega-hal"
 version = "0.1.0"
 source = "git+https://github.com/rahix/avr-hal?rev=190f2c3cb8d29e10f71119352b912369dc5a1fb7#190f2c3cb8d29e10f71119352b912369dc5a1fb7"
@@ -73,9 +67,8 @@ dependencies = [
 
 [[package]]
 name = "avr_tc0_embassy_time"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "arraydeque",
  "atmega-hal",
  "avr-device",
  "avr-hal-generic",

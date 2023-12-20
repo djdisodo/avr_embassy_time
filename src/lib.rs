@@ -29,7 +29,6 @@ extern crate static_assertions as sa;
 
 use core::mem::MaybeUninit;
 use core::task::Waker;
-use arraydeque::ArrayDeque;
 use atmega_hal::pac::TC0;
 use avr_device::atmega328p::Peripherals;
 use env_int::env_int;
@@ -97,9 +96,26 @@ pub static mut QUEUE: [LinkedList; QUEUE_SIZE] = [LinkedList {
     v: AlarmOrWaker::Empty,
 }];
 
-pub static mut QUEUE_ID: ArrayDeque<u8, QUEUE_SIZE> = unsafe { MaybeUninit::zeroed().assume_init() };
+//lifo linked list queue utilizing "next" field
+pub static mut QUEUE_ID: Option<u8> = None;
 
 pub static mut QUEUE_NEXT: Option<u8> = None;
+
+fn pop_queue() -> Option<u8> {
+    unsafe {
+        QUEUE_ID.map(|x| {
+            QUEUE_ID = QUEUE[x as usize].next;
+            x
+        })
+    }
+}
+
+fn push_queue(id: u8) {
+    unsafe {
+        QUEUE[id as usize].next = QUEUE_ID;
+        QUEUE_ID = Some(id);
+    }
+}
 
 
 impl Driver for AvrTc0EmbassyTimeDriver {
@@ -113,7 +129,7 @@ impl Driver for AvrTc0EmbassyTimeDriver {
     }
 
     unsafe fn allocate_alarm(&self) -> Option<AlarmHandle> {
-        avr_hal_generic::avr_device::interrupt::free(|_| QUEUE_ID.pop_front()).map(|n| {
+        avr_hal_generic::avr_device::interrupt::free(|_| pop_queue()).map(|n| {
             // QUEUE[n as usize] = LinkedList {
             //     next: None,
             //     at: 0, //uninitialized values doesn't matter since it's not linked anywhere
@@ -160,7 +176,7 @@ impl TimerQueue for AvrTc0EmbassyTimeDriver {
     #[inline(never)]
     fn schedule_wake(&'static self, at: Instant, waker: &Waker) {
         unsafe {
-            avr_device::interrupt::free(|_| QUEUE_ID.pop_front().map(|id| {
+            avr_device::interrupt::free(|_| pop_queue().map(|id| {
                 let this_alarm = &mut QUEUE[id as usize];
                 *this_alarm = LinkedList {
                     next: None,
@@ -210,7 +226,7 @@ pub unsafe fn __tc0_ovf() {
             return if QUEUE[n as usize].at <= TICKS_ELAPSED {
                 let next = QUEUE[n as usize].clone();
                 queue_next = next.next;
-                QUEUE_ID.push_back(n).unwrap();
+                push_queue(n);
                 (Some(next.v), TICKS_ELAPSED)
             } else {
                 (None, TICKS_ELAPSED)
@@ -229,7 +245,7 @@ pub unsafe fn __tc0_ovf() {
                 return if QUEUE[n as usize].at <= ticks_elapsed {
                     let next = QUEUE[n as usize].clone();
                     queue_next = next.next;
-                    QUEUE_ID.push_back(n).unwrap_unchecked();
+                    push_queue(n);
                     Some(next.v)
                 } else {
                     None
@@ -243,7 +259,13 @@ pub unsafe fn __tc0_ovf() {
 
 pub fn init_system_time(tc: &mut TC0) {
     unsafe {
-        QUEUE_ID = ArrayDeque::from_iter(0..(QUEUE_SIZE as u8));
+        let mut iter = 1..(QUEUE_SIZE as u8);
+        QUEUE = [(); QUEUE_SIZE].map(|_| LinkedList {
+            next: iter.next(),
+            at: 0,
+            v: AlarmOrWaker::Empty,
+        });
+        QUEUE_ID = Some(0);
         QUEUE_NEXT = None;
         avr_device::interrupt::enable();
         avr_device::interrupt::free(|_| {
