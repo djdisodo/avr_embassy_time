@@ -32,6 +32,7 @@ use env_int::env_int;
 use embassy_time::driver::{AlarmHandle, Driver};
 use embassy_time::Instant;
 use embassy_time::queue::TimerQueue;
+use core::mem::{size_of, transmute};
 
 sa::const_assert!(true);
 
@@ -87,11 +88,18 @@ pub enum AlarmOrWaker {
     Empty
 }
 
-pub static mut QUEUE: [LinkedList; QUEUE_SIZE] = [LinkedList {
-    next: None,
-    at: 0,
-    v: AlarmOrWaker::Empty,
-}];
+pub static mut QUEUE: [LinkedList; QUEUE_SIZE] = unsafe {
+    transmute(
+        [
+            transmute::<_, [u8; size_of::<LinkedList>()]>(LinkedList {
+                next: Option::None,
+                at: 0,
+                v: AlarmOrWaker::Empty,
+            });
+            QUEUE_SIZE
+        ]
+    )
+};
 
 //lifo linked list queue utilizing "next" field
 pub static mut QUEUE_ID: Option<u8> = None;
@@ -210,23 +218,22 @@ macro_rules! define_interrupt {
 
 #[inline(always)]
 pub unsafe fn __tc0_ovf() {
-    let mut queue_next = avr_device::interrupt::free(|_| {
+    let (mut queue_next, ticks_elapsed) = avr_device::interrupt::free(|_| {
         TICKS_ELAPSED += TICKS_PER_COUNT;
-        QUEUE_NEXT.take()
+        (QUEUE_NEXT.take(), TICKS_ELAPSED)
     }); //minimize critical section
     let (mut next_option, ticks_elapsed) = (|| {
-        TICKS_ELAPSED += TICKS_PER_COUNT;
         if let Some(n) = queue_next {
-            return if QUEUE[n as usize].at <= TICKS_ELAPSED {
+            return if QUEUE[n as usize].at <= ticks_elapsed {
                 let next = QUEUE[n as usize].clone();
                 queue_next = next.next;
                 avr_device::interrupt::free(|_| push_queue(n));
-                (Some(next.v), TICKS_ELAPSED)
+                (Some(next.v), ticks_elapsed)
             } else {
-                (None, TICKS_ELAPSED)
+                (None, ticks_elapsed)
             }
         }
-        (None, TICKS_ELAPSED)
+        (None, ticks_elapsed)
     })();
     while let Some(next) = next_option {
         match next {
