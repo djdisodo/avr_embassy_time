@@ -11,8 +11,6 @@ extern crate static_assertions as sa;
 /// adjust resolution if timer can't keep up,
 /// this is because timer interrupt doesn't finish fast enough
 ///
-/// note: these functions shouldn't be called from interrupt context
-/// this is because this library doesn't disable interrupt most of the time during write
 ///
 /// TODO: allow configuration from env
 ///
@@ -30,7 +28,6 @@ extern crate static_assertions as sa;
 use core::mem::MaybeUninit;
 use core::task::Waker;
 use atmega_hal::pac::TC0;
-use avr_device::atmega328p::Peripherals;
 use env_int::env_int;
 use embassy_time::driver::{AlarmHandle, Driver};
 use embassy_time::Instant;
@@ -213,9 +210,6 @@ macro_rules! define_interrupt {
 
 #[inline(always)]
 pub unsafe fn __tc0_ovf() {
-    let Peripherals {
-        TC0: tc0, ..
-    } = Peripherals::steal();
     let mut queue_next = avr_device::interrupt::free(|_| {
         TICKS_ELAPSED += TICKS_PER_COUNT;
         QUEUE_NEXT.take()
@@ -226,7 +220,7 @@ pub unsafe fn __tc0_ovf() {
             return if QUEUE[n as usize].at <= TICKS_ELAPSED {
                 let next = QUEUE[n as usize].clone();
                 queue_next = next.next;
-                push_queue(n);
+                avr_device::interrupt::free(|_| push_queue(n));
                 (Some(next.v), TICKS_ELAPSED)
             } else {
                 (None, TICKS_ELAPSED)
@@ -245,7 +239,7 @@ pub unsafe fn __tc0_ovf() {
                 return if QUEUE[n as usize].at <= ticks_elapsed {
                     let next = QUEUE[n as usize].clone();
                     queue_next = next.next;
-                    push_queue(n);
+                    avr_device::interrupt::free(|_| push_queue(n));
                     Some(next.v)
                 } else {
                     None
