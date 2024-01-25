@@ -1,5 +1,5 @@
 #![no_std]
-#![feature(const_trait_impl, const_maybe_uninit_zeroed)]
+#![feature(const_trait_impl)]
 extern crate static_assertions as sa;
 
 /// embassy_time implementation for avr
@@ -25,7 +25,6 @@ extern crate static_assertions as sa;
 /// ```
 /// note you **must** initialize timer before using embassy_time
 
-use core::mem::MaybeUninit;
 use core::task::Waker;
 use atmega_hal::pac::TC0;
 use env_int::env_int;
@@ -65,7 +64,7 @@ const CLOCKS_PER_TICK: u64 = prescalar::PRE * DIVIDER;
 #[allow(dead_code)]
 const TICKS_PER_COUNT: u64 = 256 / DIVIDER;
 
-const QUEUE_SIZE: usize = env_int!("AVR_EMBASSY_TIME_QUEUE_SIZE", 4);
+const QUEUE_SIZE: usize = env_int!(AVR_EMBASSY_TIME_QUEUE_SIZE, 4);
 
 sa::const_assert_eq!(FREQ % CLOCKS_PER_TICK, 0);
 sa::const_assert_eq!(FREQ / CLOCKS_PER_TICK, embassy_time::TICK_HZ);

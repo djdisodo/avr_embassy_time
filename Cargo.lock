@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "avr_tc0_embassy_time"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "atmega-hal",
  "avr-device",
@@ -151,9 +151,9 @@ checksum = "723dce4e9f25b6e6c5f35628e144794e5b459216ed7da97b7c4b66cdb3fa82ca"
 
 [[package]]
 name = "env_int"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56770c6e9d29045810de45b3de328902245dd4834f35283b587a63951ab5e975"
+checksum = "6bf470cb61ef56a12c3c30a0f082a7bd5aca4a65dcfd3883b662639737b4100e"
 dependencies = [
  "derive-syn-parse",
  "proc-macro2",
