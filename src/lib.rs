@@ -2,6 +2,7 @@
 #![feature(const_trait_impl)]
 extern crate static_assertions as sa;
 
+use core::cmp::max;
 /// embassy_time implementation for avr
 ///
 /// configure using feature flags
@@ -21,23 +22,24 @@ extern crate static_assertions as sa;
 ///
 /// you need to initialize timer as well
 /// ```rust
-/// init_system_time(&mut dp.TC0);
+/// init_system_time(&mut dp.TC1);
 /// ```
 /// note you **must** initialize timer before using embassy_time
 
 use core::task::Waker;
-use atmega_hal::pac::TC0;
+use atmega_hal::pac::TC1;
 use env_int::env_int;
 use embassy_time::driver::{AlarmHandle, Driver};
 use embassy_time::Instant;
 use embassy_time::queue::TimerQueue;
 use core::mem::{size_of, transmute};
+use avr_device::atmega328p::Peripherals;
 
 sa::const_assert!(true);
 
 pub static mut TICKS_ELAPSED: u64 = 0;
 
-pub struct AvrTc0EmbassyTimeDriver{}
+pub struct AvrTc1EmbassyTimeDriver{}
 
 #[cfg(feature = "freq16MHz")]
 #[allow(dead_code)]
@@ -45,30 +47,16 @@ const FREQ: u64 = 16_000_000;
 
 #[cfg(feature = "prescalar8")]
 mod prescalar {
-    use atmega_hal::pac::tc0::tccr0b::TCCR0B_SPEC;
+    use atmega_hal::pac::tc1::tccr1b::TCCR1B_SPEC;
     use avr_device::generic::W;
-
-    pub const PRE: u64 = 8;
-    pub fn set_prescalar(reg: &mut atmega_hal::pac::tc0::tccr0b::W) -> &mut W<TCCR0B_SPEC> {
-        reg.cs0().prescale_8()
+    pub fn set_prescalar(reg: &mut atmega_hal::pac::tc1::tccr1b::W) -> &mut W<TCCR1B_SPEC> {
+        unsafe {
+            reg.bits(0).cs1().prescale_64()
+        }
     }
 }
 
-#[cfg(feature = "divider2")]
-const DIVIDER: u64 = 2;
-
-#[allow(dead_code)]
-const CLOCKS_PER_COUNT: u64 = prescalar::PRE * 256;
-#[allow(dead_code)]
-const CLOCKS_PER_TICK: u64 = prescalar::PRE * DIVIDER;
-#[allow(dead_code)]
-const TICKS_PER_COUNT: u64 = 256 / DIVIDER;
-
 const QUEUE_SIZE: usize = env_int!(AVR_EMBASSY_TIME_QUEUE_SIZE, 4);
-
-sa::const_assert_eq!(FREQ % CLOCKS_PER_TICK, 0);
-sa::const_assert_eq!(FREQ / CLOCKS_PER_TICK, embassy_time::TICK_HZ);
-sa::const_assert_eq!(256 % DIVIDER, 0);
 
 #[derive(Debug, Clone)]
 pub struct LinkedList {
@@ -91,7 +79,7 @@ pub static mut QUEUE: [LinkedList; QUEUE_SIZE] = unsafe {
     transmute(
         [
             transmute::<_, [u8; size_of::<LinkedList>()]>(LinkedList {
-                next: Option::None,
+                next: None,
                 at: 0,
                 v: AlarmOrWaker::Empty,
             });
@@ -122,14 +110,17 @@ fn push_queue(id: u8) {
 }
 
 
-impl Driver for AvrTc0EmbassyTimeDriver {
+macro_rules! tc1 {
+    () => {
+        Peripherals::steal().TC1
+    };
+}
+
+
+impl Driver for AvrTc1EmbassyTimeDriver {
     #[inline(always)]
     fn now(&self) -> u64 {
-        avr_hal_generic::avr_device::interrupt::free(|_| {
-            unsafe {
-                TICKS_ELAPSED
-            }
-        })
+        avr_device::interrupt::free(|_| unsafe { time_now() })
     }
 
     unsafe fn allocate_alarm(&self) -> Option<AlarmHandle> {
@@ -169,14 +160,23 @@ impl Driver for AvrTc0EmbassyTimeDriver {
                     }
                 }
                 next.replace(alarm.id());
+                if QUEUE_NEXT == Some(alarm.id()) {
+                    let ticks_elapsed = time_now();
+                    let ticks_remaining = timestamp as i64 - ticks_elapsed as i64;
+                    if ticks_remaining < u16::MAX as i64 {
+                        let ticks_remaining = max(MARGIN_TICKS, ticks_remaining);
+                        let ocr1a = u16::wrapping_add(tc1!().tcnt1.read().bits(), ticks_remaining as u16);
+                        tc1!().ocr1a.write(|w| w.bits(ocr1a));
+                        tc1!().timsk1.modify(|r, w| w.bits(r.bits()).ocie1a().set_bit());
+                    }
+                }
             });
         }
         true
     }
 }
 
-
-impl TimerQueue for AvrTc0EmbassyTimeDriver {
+impl TimerQueue for AvrTc1EmbassyTimeDriver {
     #[inline(never)]
     fn schedule_wake(&'static self, at: Instant, waker: &Waker) {
         unsafe {
@@ -200,6 +200,16 @@ impl TimerQueue for AvrTc0EmbassyTimeDriver {
                     }
                 }
                 next.replace(id);
+                if QUEUE_NEXT == Some(id) {
+                    let ticks_elapsed = time_now();
+                    let ticks_remaining = at.as_ticks() as i64 - ticks_elapsed as i64;
+                    if ticks_remaining < u16::MAX as i64 {
+                        let ticks_remaining = max(MARGIN_TICKS, ticks_remaining);
+                        let ocr1a = u16::wrapping_add(tc1!().tcnt1.read().bits(), ticks_remaining as u16);
+                        tc1!().ocr1a.write(|w| w.bits(ocr1a));
+                        tc1!().timsk1.modify(|r, w| w.bits(r.bits()).ocie1a().set_bit());
+                    }
+                }
             })).expect("queue full, increase queue size");
         }
     }
@@ -209,55 +219,113 @@ impl TimerQueue for AvrTc0EmbassyTimeDriver {
 macro_rules! define_interrupt {
     ($mcu:ident) => {
         #[avr_device::interrupt($mcu)]
-        unsafe fn TIMER0_OVF() {
-            $crate::__tc0_ovf()
+        unsafe fn TIMER1_OVF() {
+            $crate::__tc1_ovf()
+        }
+
+        #[avr_device::interrupt($mcu)]
+        unsafe fn TIMER1_COMPA() {
+            $crate::__tc1_compa()
         }
     };
 }
 
+const MARGIN_TICKS: i64 = 20;
+
+//always run in critical section
+
+static mut LAST_TICKS_ELAPSED: u64 = 0;
+
+#[inline(never)]
+unsafe fn time_now() -> u64 {
+
+    let tcnt = tc1!().tcnt1.read().bits();
+    let mut ticks_elapsed = TICKS_ELAPSED + tcnt as u64;
+    if tcnt <= 100 && ticks_elapsed < LAST_TICKS_ELAPSED {
+        ticks_elapsed += u16::MAX as u64; //likely overflowed
+    }
+    LAST_TICKS_ELAPSED = ticks_elapsed;
+    ticks_elapsed
+}
+
 #[inline(always)]
-pub unsafe fn __tc0_ovf() {
-    let (mut queue_next, ticks_elapsed) = avr_device::interrupt::free(|_| {
-        TICKS_ELAPSED += TICKS_PER_COUNT;
-        (QUEUE_NEXT.take(), TICKS_ELAPSED)
-    }); //minimize critical section
-    let (mut next_option, ticks_elapsed) = (|| {
-        if let Some(n) = queue_next {
-            return if QUEUE[n as usize].at <= ticks_elapsed {
-                let next = QUEUE[n as usize].clone();
-                queue_next = next.next;
-                avr_device::interrupt::free(|_| push_queue(n));
-                (Some(next.v), ticks_elapsed)
-            } else {
-                (None, ticks_elapsed)
-            }
-        }
-        (None, ticks_elapsed)
-    })();
-    while let Some(next) = next_option {
-        match next {
-            AlarmOrWaker::Alarm { callback, ctx } => callback(ctx),
-            AlarmOrWaker::Waker(waker) => waker.wake(),
-            AlarmOrWaker::Empty => panic!("alarm fired before setting callback")
-        }
-        next_option = (|| {
+pub unsafe fn __tc1_compa() {
+    avr_device::interrupt::free(|_| {
+        let (mut queue_next, ticks_elapsed) = (QUEUE_NEXT.take(), time_now());
+        loop {
             if let Some(n) = queue_next {
-                return if QUEUE[n as usize].at <= ticks_elapsed {
+                if QUEUE[n as usize].at <= ticks_elapsed {
                     let next = QUEUE[n as usize].clone();
                     queue_next = next.next;
                     avr_device::interrupt::free(|_| push_queue(n));
-                    Some(next.v)
+
+                    match next.v {
+                        AlarmOrWaker::Alarm { callback, ctx } => callback(ctx),
+                        AlarmOrWaker::Waker(waker) => waker.wake(),
+                        AlarmOrWaker::Empty => panic!("alarm fired before setting callback")
+                    }
                 } else {
-                    None
+                    let ticks_remaining = QUEUE[n as usize].at - ticks_elapsed;
+                    if ticks_remaining < u16::MAX as u64 {
+                        let ticks_remaining = max(MARGIN_TICKS as u16, ticks_remaining as u16);
+                        let ocr1a = u16::wrapping_add(tc1!().tcnt1.read().bits(), ticks_remaining);
+                        tc1!().ocr1a.write(|w| w.bits(ocr1a));
+                        tc1!().timsk1.modify(|r, w| w.bits(r.bits()).ocie1a().set_bit());
+                    } else {
+                        tc1!().timsk1.modify(|r, w| w.bits(r.bits()).ocie1a().clear_bit());
+                    }
+                    break;
                 }
-            }
-            None
-        })()
-    }
-    avr_device::interrupt::free(|_| QUEUE_NEXT = queue_next)
+            } else {
+                tc1!().timsk1.modify(|r, w| w.bits(r.bits()).ocie1a().clear_bit());
+                break;
+            };
+        }
+        QUEUE_NEXT = queue_next;
+    });
 }
 
-pub fn init_system_time(tc: &mut TC0) {
+#[inline(always)]
+pub unsafe fn __tc1_ovf() {
+    avr_device::interrupt::free(|_| {
+        TICKS_ELAPSED += u16::MAX as u64;
+        LAST_TICKS_ELAPSED = TICKS_ELAPSED;
+        let (mut queue_next, ticks_elapsed) = (QUEUE_NEXT.take(), TICKS_ELAPSED);
+
+        loop {
+            if let Some(n) = queue_next {
+                if QUEUE[n as usize].at <= ticks_elapsed {
+                    let next = QUEUE[n as usize].clone();
+                    queue_next = next.next;
+                    avr_device::interrupt::free(|_| push_queue(n));
+
+                    match next.v {
+                        AlarmOrWaker::Alarm { callback, ctx } => callback(ctx),
+                        AlarmOrWaker::Waker(waker) => waker.wake(),
+                        AlarmOrWaker::Empty => panic!("alarm fired before setting callback")
+                    }
+                } else {
+                    let ticks_remaining = QUEUE[n as usize].at - ticks_elapsed;
+                    if ticks_remaining < u16::MAX as u64 {
+                        let ticks_remaining = max(MARGIN_TICKS as u16, ticks_remaining as u16);
+                        let ocr1a = u16::wrapping_add(tc1!().tcnt1.read().bits(), ticks_remaining);
+                        tc1!().ocr1a.write(|w| w.bits(ocr1a));
+                        tc1!().timsk1.modify(|r, w| w.bits(r.bits()).ocie1a().set_bit());
+                    } else {
+                        tc1!().timsk1.modify(|r, w| w.bits(r.bits()).ocie1a().clear_bit());
+                    }
+                    break;
+                }
+            } else {
+                tc1!().timsk1.modify(|r, w| w.bits(r.bits()).ocie1a().clear_bit());
+                break;
+            };
+        }
+        QUEUE_NEXT = queue_next;
+    });
+}
+
+pub fn init_system_time(tc: &mut TC1) {
     unsafe {
         let mut iter = 1..(QUEUE_SIZE as u8);
         QUEUE = [(); QUEUE_SIZE].map(|_| LinkedList {
@@ -270,12 +338,14 @@ pub fn init_system_time(tc: &mut TC0) {
         avr_device::interrupt::enable();
         avr_device::interrupt::free(|_| {
             TICKS_ELAPSED = 0;
-            tc.tccr0b.write(prescalar::set_prescalar);
-            tc.timsk0.write(|w| w.toie0().bit(true));
-            tc.tcnt0.write(|w| w.bits(0));
+            LAST_TICKS_ELAPSED = 0;
+            tc.tccr1b.write(prescalar::set_prescalar);
+            tc.tccr1a.write(|w| w.com1a().disconnected());
+            tc.timsk1.write(|w| w.toie1().bit(true).ocie1a().bit(true));
+            tc.tcnt1.write(|w| w.bits(0));
         });
     }
 }
 
-embassy_time::time_driver_impl!(static DRIVER: AvrTc0EmbassyTimeDriver = AvrTc0EmbassyTimeDriver{});
-embassy_time::timer_queue_impl!(static QUEUE_DRIVER: AvrTc0EmbassyTimeDriver = AvrTc0EmbassyTimeDriver{});
+embassy_time::time_driver_impl!(static DRIVER: AvrTc1EmbassyTimeDriver = AvrTc1EmbassyTimeDriver{});
+embassy_time::timer_queue_impl!(static QUEUE_DRIVER: AvrTc1EmbassyTimeDriver = AvrTc1EmbassyTimeDriver{});
