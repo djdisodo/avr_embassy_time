@@ -125,11 +125,11 @@ impl Driver for AvrTc1EmbassyTimeDriver {
 
     unsafe fn allocate_alarm(&self) -> Option<AlarmHandle> {
         avr_hal_generic::avr_device::interrupt::free(|_| pop_queue()).map(|n| {
-            // QUEUE[n as usize] = LinkedList {
-            //     next: None,
-            //     at: 0, //uninitialized values doesn't matter since it's not linked anywhere
-            //     v: AlarmOrWaker::Empty
-            // };
+            QUEUE[n as usize] = LinkedList {
+                next: None,
+                at: 0, //uninitialized values doesn't matter since it's not linked anywhere
+                v: AlarmOrWaker::Empty
+            };
             AlarmHandle::new(n)
         })
     }
