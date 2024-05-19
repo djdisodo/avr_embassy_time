@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(const_trait_impl)]
+#![feature(int_roundings)]
 extern crate static_assertions as sa;
 
 use core::cmp::max;
@@ -29,11 +30,11 @@ use core::cmp::max;
 use core::task::Waker;
 use atmega_hal::pac::TC1;
 use env_int::env_int;
-use embassy_time::driver::{AlarmHandle, Driver};
-use embassy_time::Instant;
-use embassy_time::queue::TimerQueue;
+use embassy_time_driver::{AlarmHandle, Driver};
+use embassy_time_queue_driver::TimerQueue;
 use core::mem::{size_of, transmute};
 use avr_device::atmega328p::Peripherals;
+use crate::prescalar::{MARGIN_TICKS, PRESCALAR};
 
 sa::const_assert!(true);
 
@@ -41,17 +42,72 @@ pub static mut TICKS_ELAPSED: u64 = 0;
 
 pub struct AvrTc1EmbassyTimeDriver{}
 
-#[cfg(feature = "freq16MHz")]
-#[allow(dead_code)]
-const FREQ: u64 = 16_000_000;
+#[cfg(feature = "prescalar1")]
+mod prescalar {
+    use atmega_hal::pac::tc1::tccr1b::TCCR1B_SPEC;
+    use avr_device::generic::W;
+
+    pub const PRESCALAR: u64 = 1;
+    pub const MARGIN_TICKS: i64 = 160;
+    pub fn set_prescalar(reg: &mut atmega_hal::pac::tc1::tccr1b::W) -> &mut W<TCCR1B_SPEC> {
+        unsafe {
+            reg.bits(0).cs1().direct()
+        }
+    }
+}
 
 #[cfg(feature = "prescalar8")]
 mod prescalar {
     use atmega_hal::pac::tc1::tccr1b::TCCR1B_SPEC;
     use avr_device::generic::W;
+
+    pub const PRESCALAR: u64 = 8;
+    pub const MARGIN_TICKS: i64 = 80;
+    pub fn set_prescalar(reg: &mut atmega_hal::pac::tc1::tccr1b::W) -> &mut W<TCCR1B_SPEC> {
+        unsafe {
+            reg.bits(0).cs1().prescale_8()
+        }
+    }
+}
+
+#[cfg(feature = "prescalar64")]
+mod prescalar {
+    use atmega_hal::pac::tc1::tccr1b::TCCR1B_SPEC;
+    use avr_device::generic::W;
+
+    pub const PRESCALAR: u64 = 64;
+    pub const MARGIN_TICKS: i64 = 20;
     pub fn set_prescalar(reg: &mut atmega_hal::pac::tc1::tccr1b::W) -> &mut W<TCCR1B_SPEC> {
         unsafe {
             reg.bits(0).cs1().prescale_64()
+        }
+    }
+}
+
+#[cfg(feature = "prescalar256")]
+mod prescalar {
+    use atmega_hal::pac::tc1::tccr1b::TCCR1B_SPEC;
+    use avr_device::generic::W;
+
+    pub const PRESCALAR: u64 = 256;
+    pub const MARGIN_TICKS: i64 = 10;
+    pub fn set_prescalar(reg: &mut atmega_hal::pac::tc1::tccr1b::W) -> &mut W<TCCR1B_SPEC> {
+        unsafe {
+            reg.bits(0).cs1().prescale_256()
+        }
+    }
+}
+
+#[cfg(feature = "prescalar1024")]
+mod prescalar {
+    use atmega_hal::pac::tc1::tccr1b::TCCR1B_SPEC;
+    use avr_device::generic::W;
+
+    pub const PRESCALAR: u64 = 1024;
+    pub const MARGIN_TICKS: i64 = 5;
+    pub fn set_prescalar(reg: &mut atmega_hal::pac::tc1::tccr1b::W) -> &mut W<TCCR1B_SPEC> {
+        unsafe {
+            reg.bits(0).cs1().prescale_1024()
         }
     }
 }
@@ -120,7 +176,7 @@ macro_rules! tc1 {
 impl Driver for AvrTc1EmbassyTimeDriver {
     #[inline(always)]
     fn now(&self) -> u64 {
-        avr_device::interrupt::free(|_| unsafe { time_now() })
+        avr_device::interrupt::free(|_| unsafe { time_now() }) * PRESCALAR
     }
 
     unsafe fn allocate_alarm(&self) -> Option<AlarmHandle> {
@@ -143,8 +199,11 @@ impl Driver for AvrTc1EmbassyTimeDriver {
         }
     }
 
-    fn set_alarm(&self, alarm: AlarmHandle, timestamp: u64) -> bool {
+    fn set_alarm(&self, alarm: AlarmHandle, mut timestamp: u64) -> bool {
         unsafe {
+            //apply prescalar
+            timestamp = timestamp.div_ceil(PRESCALAR);
+
             let this_alarm = &mut QUEUE[alarm.id() as usize];
             this_alarm.at = timestamp;
             avr_device::interrupt::free(|_| {
@@ -178,13 +237,15 @@ impl Driver for AvrTc1EmbassyTimeDriver {
 
 impl TimerQueue for AvrTc1EmbassyTimeDriver {
     #[inline(never)]
-    fn schedule_wake(&'static self, at: Instant, waker: &Waker) {
+    fn schedule_wake(&'static self, at: u64, waker: &Waker) {
         unsafe {
+            //apply prescalar
+            let at = at.div_ceil(PRESCALAR);
             avr_device::interrupt::free(|_| pop_queue().map(|id| {
                 let this_alarm = &mut QUEUE[id as usize];
                 *this_alarm = LinkedList {
                     next: None,
-                    at: at.as_ticks(),
+                    at,
                     v: AlarmOrWaker::Waker(waker.clone()),
                 };
                 let mut next = &mut QUEUE_NEXT;
@@ -192,7 +253,7 @@ impl TimerQueue for AvrTc1EmbassyTimeDriver {
                     let next_i = &mut QUEUE[i as usize];
                     let next_at = next_i.at;
 
-                    if next_at > at.as_ticks() {
+                    if next_at > at {
                         this_alarm.next = Some(i);
                         break;
                     } else {
@@ -202,7 +263,7 @@ impl TimerQueue for AvrTc1EmbassyTimeDriver {
                 next.replace(id);
                 if QUEUE_NEXT == Some(id) {
                     let ticks_elapsed = time_now();
-                    let ticks_remaining = at.as_ticks() as i64 - ticks_elapsed as i64;
+                    let ticks_remaining = at as i64 - ticks_elapsed as i64;
                     if ticks_remaining < u16::MAX as i64 {
                         let ticks_remaining = max(MARGIN_TICKS, ticks_remaining);
                         let ocr1a = u16::wrapping_add(tc1!().tcnt1.read().bits(), ticks_remaining as u16);
@@ -229,8 +290,6 @@ macro_rules! define_interrupt {
         }
     };
 }
-
-const MARGIN_TICKS: i64 = 20;
 
 //always run in critical section
 
@@ -347,5 +406,5 @@ pub fn init_system_time(tc: &mut TC1) {
     }
 }
 
-embassy_time::time_driver_impl!(static DRIVER: AvrTc1EmbassyTimeDriver = AvrTc1EmbassyTimeDriver{});
-embassy_time::timer_queue_impl!(static QUEUE_DRIVER: AvrTc1EmbassyTimeDriver = AvrTc1EmbassyTimeDriver{});
+embassy_time_driver::time_driver_impl!(static DRIVER: AvrTc1EmbassyTimeDriver = AvrTc1EmbassyTimeDriver{});
+embassy_time_queue_driver::timer_queue_impl!(static QUEUE_DRIVER: AvrTc1EmbassyTimeDriver = AvrTc1EmbassyTimeDriver{});
