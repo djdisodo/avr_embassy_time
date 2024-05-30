@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(const_trait_impl)]
 #![feature(int_roundings)]
+#![feature(let_chains)]
 extern crate static_assertions as sa;
 
 use core::cmp::max;
@@ -90,7 +91,7 @@ mod prescalar {
     use avr_device::generic::W;
 
     pub const PRESCALAR: u64 = 256;
-    pub const MARGIN_TICKS: i64 = 10;
+    pub const MARGIN_TICKS: i64 = 20;
     pub fn set_prescalar(reg: &mut atmega_hal::pac::tc1::tccr1b::W) -> &mut W<TCCR1B_SPEC> {
         unsafe {
             reg.bits(0).cs1().prescale_256()
@@ -104,7 +105,7 @@ mod prescalar {
     use avr_device::generic::W;
 
     pub const PRESCALAR: u64 = 1024;
-    pub const MARGIN_TICKS: i64 = 5;
+    pub const MARGIN_TICKS: i64 = 20;
     pub fn set_prescalar(reg: &mut atmega_hal::pac::tc1::tccr1b::W) -> &mut W<TCCR1B_SPEC> {
         unsafe {
             reg.bits(0).cs1().prescale_1024()
@@ -248,19 +249,38 @@ impl TimerQueue for AvrTc1EmbassyTimeDriver {
                     at,
                     v: AlarmOrWaker::Waker(waker.clone()),
                 };
+                let mut next_prev = &mut None;
                 let mut next = &mut QUEUE_NEXT;
+                let mut scheduled = false;
                 while let &mut Some(i) = next {
                     let next_i = &mut QUEUE[i as usize];
                     let next_at = next_i.at;
-
-                    if next_at > at {
-                        this_alarm.next = Some(i);
+                    if let AlarmOrWaker::Waker(i_waker) = &next_i.v && i_waker.will_wake(waker) {
+                        if scheduled {
+                            //remove current iteration
+                            *next_prev = next_i.next;
+                            push_queue(i);
+                        } else {
+                            scheduled = true;
+                            push_queue(id);
+                        }
                         break;
-                    } else {
-                        next = &mut next_i.next;
                     }
+
+                    next_prev = if next_at > at && !scheduled {
+                        this_alarm.next = Some(i);
+                        next.replace(id);
+                        scheduled = true;
+                        &mut this_alarm.next
+                    } else {
+                        next
+                    };
+                    next = &mut next_i.next;
                 }
-                next.replace(id);
+                if !scheduled {
+                    next.replace(id);
+                }
+
                 if QUEUE_NEXT == Some(id) {
                     let ticks_elapsed = time_now();
                     let ticks_remaining = at as i64 - ticks_elapsed as i64;

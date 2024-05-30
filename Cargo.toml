@@ -1,6 +1,6 @@
 [package]
 name = "avr_tc1_embassy_time"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 author = "djdisodo@gmail.com"
 license = "MIT"
@@ -26,10 +26,9 @@ rev = "3e362624547462928a219c40f9ea8e3a64f21e5f"
 [dependencies.atmega-hal]
 git = "https://github.com/rahix/avr-hal"
 rev = "3e362624547462928a219c40f9ea8e3a64f21e5f"
-features = ["atmega328p"]
 
 [features]
-default = ["prescalar256"]
+default = ["prescalar64"]
 stack_addr = ["dep:vcell"]
 
 # prescalar
