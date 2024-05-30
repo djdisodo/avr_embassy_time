@@ -34,7 +34,6 @@ use env_int::env_int;
 use embassy_time_driver::{AlarmHandle, Driver};
 use embassy_time_queue_driver::TimerQueue;
 use core::mem::{size_of, transmute};
-use avr_device::atmega328p::Peripherals;
 use crate::prescalar::{MARGIN_TICKS, PRESCALAR};
 
 sa::const_assert!(true);
@@ -169,7 +168,8 @@ fn push_queue(id: u8) {
 
 macro_rules! tc1 {
     () => {
-        Peripherals::steal().TC1
+        // tc1 is always zst currently
+        core::mem::uninitialized::<TC1>()
     };
 }
 
