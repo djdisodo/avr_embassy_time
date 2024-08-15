@@ -5,7 +5,7 @@ version = 3
 [[package]]
 name = "atmega-hal"
 version = "0.1.0"
-source = "git+https://github.com/rahix/avr-hal?rev=3e362624547462928a219c40f9ea8e3a64f21e5f#3e362624547462928a219c40f9ea8e3a64f21e5f"
+source = "git+https://github.com/rahix/avr-hal?rev=65b304ec974a13f27ebc2ced21aa462c4b81ce82#65b304ec974a13f27ebc2ced21aa462c4b81ce82"
 dependencies = [
  "avr-device",
  "avr-hal-generic",
@@ -37,7 +37,7 @@ dependencies = [
 [[package]]
 name = "avr-hal-generic"
 version = "0.1.0"
-source = "git+https://github.com/rahix/avr-hal?rev=3e362624547462928a219c40f9ea8e3a64f21e5f#3e362624547462928a219c40f9ea8e3a64f21e5f"
+source = "git+https://github.com/rahix/avr-hal?rev=65b304ec974a13f27ebc2ced21aa462c4b81ce82#65b304ec974a13f27ebc2ced21aa462c4b81ce82"
 dependencies = [
  "avr-device",
  "cfg-if 0.1.10",
